@@ -11,3 +11,11 @@ __pycache__/
 .vscode/
 *.sqlite
 *.db
+
+# Debug/scrape artifacts
+data/
+artifacts/
+playwright-report/
+htmlcov/
+.pytest_cache/
+coverage.xml
