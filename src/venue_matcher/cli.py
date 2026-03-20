@@ -8,6 +8,7 @@ import typer
 
 from .capacity import infer_capacity
 from .db import Database
+from .import_venues import import_from_yaml
 from .models import ArtistProfile, Event, Venue, VenueProfile
 from .places import places_place_details, places_text_search, require_api_key
 from .profiling_llm import llm_infer_venue_profile
@@ -16,6 +17,7 @@ from .scraping.extract_css import extract_events_from_css
 from .scraping.extract_jsonld import extract_events_from_jsonld
 from .scraping.fetch import fetch_html
 from .scraping.normalize import normalize_event_datetimes
+from .show_scoring import rank_opportunities, score_show_opportunity
 from .website_discovery import can_fetch, discover_calendar_urls
 
 app = typer.Typer(help="Discover venues, scrape calendars, infer profiles, and rank opener-fit matches.")
@@ -58,11 +60,26 @@ def discover(query: str = typer.Option(..., "--query"), limit: int = typer.Optio
 
 
 @app.command()
-def scrape(venue_id: str = typer.Option(..., "--venue-id"), use_playwright: bool = typer.Option(False), db_path: Path = typer.Option(DEFAULT_DB), ignore_robots: bool = typer.Option(False)):
+def scrape(venue_id: str = typer.Option(None, "--venue-id"), all_venues: bool = typer.Option(False, "--all"), use_playwright: bool = typer.Option(False), db_path: Path = typer.Option(DEFAULT_DB), ignore_robots: bool = typer.Option(False)):
     db = Database(db_path)
-    venue = db.load_venue(venue_id)
-    if not venue:
-        raise typer.BadParameter(f"Unknown venue_id: {venue_id}")
+    if all_venues:
+        venues = db.load_all_venues()
+        if not venues:
+            typer.echo("No venues in database. Import venues first with import-venues.")
+            raise typer.Exit(1)
+        for v in venues:
+            _scrape_venue(v, db, ignore_robots, use_playwright)
+    elif venue_id:
+        venue = db.load_venue(venue_id)
+        if not venue:
+            raise typer.BadParameter(f"Unknown venue_id: {venue_id}")
+        _scrape_venue(venue, db, ignore_robots, use_playwright)
+    else:
+        typer.echo("Provide --venue-id or --all")
+        raise typer.Exit(1)
+
+
+def _scrape_venue(venue: Venue, db: Database, ignore_robots: bool, use_playwright: bool = False) -> list[Event]:
     html_pages: dict[str, str] = {}
     all_events: list[Event] = []
     targets = venue.calendar_urls or ([venue.website_url] if venue.website_url else [])
@@ -78,7 +95,10 @@ def scrape(venue_id: str = typer.Option(..., "--venue-id"), use_playwright: bool
             event.venue_id = venue.venue_id
         css_events = []
         if not jsonld_events:
-            rules = {"venue_id": venue.venue_id, "list_selector": ".event, .tribe-events-event, article", "title_selector": "h1, h2, h3, .title", "date_selector": "time, .date", "url_selector": "a[href]", "artist_selector": ".artist, .artists li"}
+            if venue.css_rules:
+                rules = {**venue.css_rules, "venue_id": venue.venue_id}
+            else:
+                rules = {"venue_id": venue.venue_id, "list_selector": ".event, .tribe-events-event, article", "title_selector": "h1, h2, h3, .title", "date_selector": "time, .date", "url_selector": "a[href]", "artist_selector": ".artist, .artists li"}
             css_events = extract_events_from_css(html, url, rules)
         page_events = normalize_event_datetimes(jsonld_events or css_events, venue.timezone)
         db.log_extraction(venue.venue_id, url, "jsonld" if jsonld_events else "css", f"extracted {len(page_events)} events")
@@ -91,6 +111,7 @@ def scrape(venue_id: str = typer.Option(..., "--venue-id"), use_playwright: bool
     typer.echo(f"Scraped {len(all_events)} events for {venue.name}; capacity={venue.capacity_estimate} conf={venue.capacity_confidence}")
     for source in venue.capacity_sources[:5]:
         typer.echo(f"  capacity evidence: {source.source_url} | {source.extracted_value} | {source.extracted_text_snippet[:120]}")
+    return all_events
 
 
 @app.command()
@@ -140,6 +161,99 @@ def run(artist_profile: Path = typer.Option(..., "--artist-profile"), query: str
         profile(venue_id=discovered_venue_id, db_path=db_path)
     region_name = json.loads(artist_profile.read_text()).get('preferred_regions', [query])[0]
     rank(artist_profile=artist_profile, region=region_name, limit=limit, db_path=db_path)
+
+
+@app.command("import-venues")
+def import_venues_cmd(file: Path = typer.Option(..., "--file"), db_path: Path = typer.Option(DEFAULT_DB)):
+    """Import venues from a YAML file (no Google Places API needed)."""
+    db = Database(db_path)
+    venues = import_from_yaml(file, db)
+    for v in venues:
+        typer.echo(f"  {v.venue_id}\t{v.name}\t{', '.join(v.calendar_urls[:3])}")
+    typer.echo(f"Imported {len(venues)} venues.")
+
+
+@app.command("find-openers")
+def find_openers(
+    artist_profile: Path = typer.Option(..., "--artist-profile"),
+    min_score: float = typer.Option(0.3, "--min-score"),
+    weeks_ahead: int = typer.Option(12, "--weeks-ahead"),
+    limit: int = typer.Option(30, "--limit"),
+    db_path: Path = typer.Option(DEFAULT_DB),
+):
+    """Find opener/support slot opportunities at scraped venues."""
+    artist = ArtistProfile.model_validate_json(artist_profile.read_text())
+    db = Database(db_path)
+    events = db.load_future_events()
+    if not events:
+        typer.echo("No future events in database. Run scrape first.")
+        raise typer.Exit(1)
+
+    from datetime import datetime, timedelta, timezone as tz
+    cutoff = datetime.now(tz.utc) + timedelta(weeks=weeks_ahead)
+
+    opportunities = []
+    for event in events:
+        if event.start_dt and event.start_dt.replace(tzinfo=event.start_dt.tzinfo or tz.utc) > cutoff:
+            continue
+        venue = db.load_venue(event.venue_id)
+        if not venue:
+            continue
+        profile_row = db.conn.execute(
+            "SELECT venue_id, inferred_genres, audience_traits, booking_tier, typical_bill_style, support_friendliness, confidence, reasoning_summary, evidence FROM venue_profiles WHERE venue_id = ?",
+            (event.venue_id,),
+        ).fetchone()
+        venue_profile = None
+        if profile_row:
+            venue_profile = VenueProfile(
+                venue_id=profile_row[0],
+                inferred_genres=json.loads(profile_row[1] or '[]'),
+                audience_traits=json.loads(profile_row[2] or '[]'),
+                booking_tier=profile_row[3],
+                typical_bill_style=profile_row[4],
+                support_friendliness=profile_row[5],
+                confidence=profile_row[6],
+                reasoning_summary=profile_row[7],
+                evidence=json.loads(profile_row[8] or '[]'),
+            )
+        opp = score_show_opportunity(event, venue, artist, venue_profile)
+        if opp and opp.opportunity_score >= min_score:
+            opportunities.append(opp)
+
+    ranked = rank_opportunities(opportunities)[:limit]
+    db.upsert_show_opportunities(ranked)
+
+    if not ranked:
+        typer.echo("No opportunities found above the minimum score threshold.")
+        raise typer.Exit(0)
+
+    typer.echo(f"\n{'SCORE':>5} | {'DATE':10} | {'VENUE':20} | {'SHOW':30} | WHY")
+    typer.echo("-" * 100)
+    for opp in ranked:
+        date_str = opp.event_date.strftime("%Y-%m-%d") if opp.event_date else "TBD"
+        why = "; ".join(opp.reasons[:2]) if opp.reasons else ""
+        flag_str = (" [" + ", ".join(opp.flags) + "]") if opp.flags else ""
+        typer.echo(f"{opp.opportunity_score:.2f}  | {date_str:10} | {opp.venue_name:20.20} | {opp.event_title:30.30} | {why}{flag_str}")
+    typer.echo(f"\n{len(ranked)} opportunities found.")
+
+
+@app.command()
+def pipeline(
+    file: Path = typer.Option(..., "--file"),
+    artist_profile: Path = typer.Option(..., "--artist-profile"),
+    weeks_ahead: int = typer.Option(12, "--weeks-ahead"),
+    min_score: float = typer.Option(0.3, "--min-score"),
+    limit: int = typer.Option(30, "--limit"),
+    db_path: Path = typer.Option(DEFAULT_DB),
+    ignore_robots: bool = typer.Option(False),
+):
+    """Full pipeline: import venues -> scrape all -> find opener opportunities."""
+    typer.echo("=== Step 1: Import venues ===")
+    import_venues_cmd(file=file, db_path=db_path)
+    typer.echo("\n=== Step 2: Scrape all venues ===")
+    scrape(all_venues=True, db_path=db_path, ignore_robots=ignore_robots)
+    typer.echo("\n=== Step 3: Find opener opportunities ===")
+    find_openers(artist_profile=artist_profile, min_score=min_score, weeks_ahead=weeks_ahead, limit=limit, db_path=db_path)
 
 
 def _split_city_region(address: str) -> tuple[str | None, str | None]:

@@ -14,7 +14,8 @@ def score_venue_for_artist(venue: Venue, profile: VenueProfile, artist: ArtistPr
     data_quality = min(1.0, 0.4 + 0.3 * bool(venue.website_url) + 0.3 * bool(profile.evidence))
     if venue.capacity_estimate is None:
         data_quality = min(data_quality, 0.65)
-    total = 0.3 * genre_score + 0.15 * audience_score + 0.15 * region_score + 0.1 * tier_score + 0.2 * capacity_fit + 0.1 * data_quality
+    support_friendliness = profile.support_friendliness if profile.support_friendliness else 0.5
+    total = 0.40 * capacity_fit + 0.15 * region_score + 0.10 * tier_score + 0.10 * data_quality + 0.10 * genre_score + 0.10 * audience_score + 0.05 * support_friendliness
     return MatchScore(
         venue_id=venue.venue_id,
         venue_name=venue.name,

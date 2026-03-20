@@ -55,6 +55,7 @@ class Venue(ModelMixin):
     capacity_type: str | None = None
     capacity_confidence: float = 0.0
     capacity_sources: list[CapacitySource] = field(default_factory=list)
+    css_rules: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -100,6 +101,7 @@ class ArtistProfile(ModelMixin):
     max_capacity: int | None = None
     preferred_regions: list[str] = field(default_factory=list)
     support_slot_ready: bool = True
+    available_dates: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -114,3 +116,22 @@ class MatchScore(ModelMixin):
     capacity_fit: float
     data_quality: float
     evidence: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ShowOpportunity(ModelMixin):
+    event_id: str
+    venue_id: str
+    venue_name: str
+    event_title: str
+    event_date: datetime | None = None
+    event_url: str | None = None
+    headliner: str | None = None
+    listed_artists: list[str] = field(default_factory=list)
+    opportunity_score: float = 0.0
+    capacity_fit: float = 0.0
+    bill_openness: float = 0.0
+    timing_score: float = 0.0
+    venue_support_friendliness: float = 0.0
+    reasons: list[str] = field(default_factory=list)
+    flags: list[str] = field(default_factory=list)
