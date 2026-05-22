@@ -1,0 +1,27 @@
+- name: 9:30 Club
+  url: https://www.930.com/calendar
+  list_selector: div.event-item
+  title_selector: .event-name
+  date_selector: time
+  artist_selector: .supporting-acts
+  detail_url_selector: a
+  timezone: America/New_York
+  location: Washington, DC
+- name: Bowery Ballroom
+  url: https://www.boweryballroom.com/shows
+  list_selector: article.event
+  title_selector: h2.event-title
+  date_selector: time
+  artist_selector: p.event-support
+  detail_url_selector: a.event-link
+  timezone: America/New_York
+  location: New York, NY
+- name: The Independent
+  url: https://theindependentsf.com/calendar
+  list_selector: div.event-card
+  title_selector: h3.event-card__title
+  date_selector: span.event-card__date
+  artist_selector: span.event-card__support
+  detail_url_selector: a.event-card__link
+  timezone: America/Los_Angeles
+  location: San Francisco, CA

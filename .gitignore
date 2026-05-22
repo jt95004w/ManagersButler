@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+.DS_Store
+.env
+.venv
+.envrc
+.idea/
+.vscode/
+*.sqlite
+*.db
+
+# Debug/scrape artifacts
+data/
+artifacts/
+playwright-report/
+htmlcov/
+.pytest_cache/
+coverage.xml
