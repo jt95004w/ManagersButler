@@ -1,0 +1,11 @@
+{
+  "name": "Sample Artist",
+  "target_genres": ["indie rock", "alternative"],
+  "audience_traits": ["college-age", "local-scene"],
+  "target_capacity": 300,
+  "min_capacity": 100,
+  "max_capacity": 700,
+  "preferred_regions": ["TX"],
+  "support_slot_ready": true,
+  "available_dates": []
+}
